@@ -5,71 +5,95 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/PullRequestInc/go-gpt3"
 	config "github.com/anushka2911/ChatGPT_Ctx_Validation/config"
 	utils "github.com/anushka2911/ChatGPT_Ctx_Validation/utils"
 	"github.com/joho/godotenv"
+	copy "github.com/otiai10/copy"
+)
+
+const (
+	MaxExecutionTime = 1000 * time.Second
+	Prompt           = "For given code, check if context is passed as a parameter. If missing, add context as a parameter and provide the correct code:\n\n"
 )
 
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Println("Error loading .env file:", err)
+		return
 	}
 
 	apiKey := os.Getenv(config.ChatGPT_API_KEY)
 	if apiKey == "" {
-		log.Fatal("ChatGPT API key  missing")
+		log.Println("ChatGPT API key missing")
+		return
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), MaxExecutionTime)
+	defer cancel()
+
 	client := gpt3.NewClient(apiKey)
-	//create an inputMsg := prompt + input_file_content
-	//For creating inputMsg we need to read the input folder and append the content of each file(only with .go extension) to inputMsg
 
-	filePaths, err := utils.GetGoFiles(config.Input)
+	if err := copyFiles(); err != nil {
+		log.Println("Error copying input folder:", err)
+		return
+	}
+
+	filePaths, err := utils.GetGoFiles(config.Output)
 	if err != nil {
-		log.Fatal("Error reading input code file:", err)
+		log.Println("Error reading input code file:", err)
+		return
+	}
+	//path : code
+	fileContentMap, err := utils.ReadFiles(filePaths)
+	if err != nil {
+		log.Println("Error reading input code file:", err)
+		return
 	}
 
-	// Create input messages for each file
-	var inputMsgs []string
-	for _, filePath := range filePaths {
-		fileContent, err := utils.ReadFiles(filePath)
+	for filePath, code := range fileContentMap {
+		if err := processFile(ctx, client, filePath, code); err != nil {
+			log.Println(err)
+		}
+	}
+}
+
+func copyFiles() error {
+	return copy.Copy(config.Input, config.Output)
+}
+
+func processFile(ctx context.Context, client gpt3.Client, filePath, code string) error {
+	tokenCount, err := utils.GetTokenCount(Prompt+code, client)
+	if err != nil {
+		return fmt.Errorf("error counting tokens for file %s: %v", filePath, err)
+	}
+
+	if tokenCount < config.MaxTokensLimit {
+		fmt.Printf("TOKEN COUNT FOR FILE %s: %d\n", filePath, tokenCount)
+		inputMsg := Prompt + code
+
+		resp, err := utils.MakeAPICall(ctx, client, []string{inputMsg}, config.MaxTokensLimit)
 		if err != nil {
-			log.Printf("Error reading file %s: %v\n", filePath, err)
-			continue
+
+			log.Fatal(err)
 		}
 
-		// Create an input message for each file
-		inputMsg := fmt.Sprintf("Given this code in file %s, check if context is passed as a parameter. If it's missing, add context as a parameter and provide the correct code:\n\n%s", filePath, fileContent)
-		inputMsgs = append(inputMsgs, inputMsg)
-	}
-
-	// Process each input message
-	for _, inputMsg := range inputMsgs {
-		tokenCount, err := utils.GetTokenCount(inputMsg, client)
+		file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
-			log.Fatal("Error counting tokens:", err)
+			return fmt.Errorf("error opening file %s: %v", filePath, err)
+		}
+		defer file.Close()
+
+		_, err = file.WriteString(resp)
+		if err != nil {
+			return fmt.Errorf("error writing corrected code to file %s: %v", filePath, err)
 		}
 
-		if tokenCount > config.MaxTokensLimit {
-			fmt.Println("Input exceeds the maximum token limit.")
-			// Since the input exceeds the maximum token limit, we need to split the input into multiple parts and send it to the API
-
-			parts := utils.SplitCode(inputMsg, config.MaxTokensLimit, client) // returns []strings
-			err := utils.MakeAPICall(ctx, client, parts, config.Output, config.MaxTokensLimit)
-			if err != nil {
-				log.Fatal("Error making API call:", err)
-			}
-		} else {
-			// Process the input without splitting
-			err := utils.MakeAPICall(ctx, client, []string{inputMsg}, config.Output, config.MaxTokensLimit)
-			if err != nil {
-				log.Fatal("Error making API call:", err)
-			}
-		}
+	} else {
+		fmt.Printf("MAXIMA Token Count for input file(%d\n) >= MaxTokensLimit: ", tokenCount)
 	}
-
+	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,9 +12,9 @@ import (
 	tokenizer "github.com/tiktoken-go/tokenizer"
 )
 
-func GetGoFiles(input string) ([]string, error) {
+func GetGoFiles(output string) ([]string, error) {
 	var filePaths []string
-	err := filepath.WalkDir(input, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(output, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			fmt.Println("Error while walking the directory:", err)
 			return err
@@ -49,25 +48,21 @@ func GetTokenCount(text string, client gpt3.Client) (int, error) {
 	return len(tokens), nil
 }
 
-func ReadFiles(filePath string) (string, error) {
-	var content strings.Builder
+func ReadFiles(filePaths []string) (map[string]string, error) {
+	content := make(map[string]string)
 
-	fileContent, err := os.ReadFile(filePath)
-	if err != nil {
-		fmt.Printf("Error reading file %s: %v\n", filePath, err)
-		return "", err
+	for _, filePath := range filePaths {
+		fileContent, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Printf("Error reading file %s: %v\n", filePath, err)
+			return nil, err
+		}
+
+		content[filePath] = string(fileContent)
 	}
 
-	content.Write(fileContent)
-
-	return content.String(), nil
+	return content, nil
 }
-
-//input= asbudejijwijwjiwjwijiwiwjeiwjeiwjeiwejejiwoqwkowojweiejei
-//wjijwiejiej
-//eiejiejiejiejiejiwiaushakaiwwerelirjueheniqwsdjiweowjei
-//weiej
-//wiwiwjrijrijirjirjeijrijre;oawijewijaijrijreirj;eirjjrierjeijaiajaij
 
 func SplitCode(input string, maxTokens int, client gpt3.Client) []string {
 	var parts []string
@@ -94,25 +89,27 @@ func SplitCode(input string, maxTokens int, client gpt3.Client) []string {
 		currentTokenCount += lineTokens
 	}
 
-	// Add the last part
 	parts = append(parts, currentPart)
 
 	return parts
 }
 
-func MakeAPICall(ctx context.Context, client gpt3.Client, inputMsg []string, outputFile *os.File, MaxTokensLimit int) error {
-	err := client.CompletionStreamWithEngine(ctx, gpt3.TextDavinci003Engine, gpt3.CompletionRequest{
+func MakeAPICall(ctx context.Context, client gpt3.Client, inputMsg []string, MaxTokenLimit int) (code string, err error) {
+	err = client.CompletionStreamWithEngine(ctx, gpt3.TextDavinci003Engine, gpt3.CompletionRequest{
 		Prompt:      inputMsg,
 		Temperature: gpt3.Float32Ptr(0),
-		MaxTokens:   gpt3.IntPtr(MaxTokensLimit),
+		MaxTokens:   gpt3.IntPtr(3000),
 		N:           gpt3.IntPtr(1),
 		Echo:        false,
 	}, func(resp *gpt3.CompletionResponse) {
-		//todo
+		for _, choice := range resp.Choices {
+			code += choice.Text
+		}
 	})
+
 	if err != nil {
-		log.Fatal("Error calling ChatGPT API:", err)
-		return err
+		return "", err
 	}
-	return nil
+
+	return code, nil
 }
